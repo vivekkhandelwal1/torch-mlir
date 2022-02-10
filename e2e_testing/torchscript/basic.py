@@ -1307,3 +1307,21 @@ class StdBiasedModule(torch.nn.Module):
 @register_test_case(module_factory=lambda: StdBiasedModule())
 def StdBiasedModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(2, 3, 4))
+
+# ==============================================================================
+
+class BincountModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1], torch.int64, True),
+    ])
+    def forward(self, x):
+        return torch.bincount(x)
+
+@register_test_case(module_factory=lambda: BincountModule())
+def BincountModule_basic(module, tu: TestUtils):
+    module.forward(torch.randint(100, (10,)))

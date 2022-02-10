@@ -18,6 +18,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
+#include "torch-mlir/Dialect/Torch/IR/TorchTypes.h"
 #include "torch-mlir/Dialect/Torch/Transforms/Passes.h"
 #include "torch-mlir/Dialect/Torch/Utils/TorchUpstream.h"
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
@@ -490,6 +491,8 @@ public:
       return visitAtenConstantPadNdOp(constantPadNdOp, operands);
     } else if (auto indexTensorOp = dyn_cast<AtenIndexTensorOp>(op)) {
       return visitAtenIndexTensorOp(indexTensorOp, operands);
+    } else if (auto bincountOp = dyn_cast<AtenBincountOp>(op)) {
+      return visitAtenBincountOp(bincountOp, operands);
     }
 
     // Otherwise, this is an unknown operation. Just mark all results as
@@ -655,6 +658,9 @@ private:
   ChangeResult
   visitAtenIndexTensorOp(AtenIndexTensorOp op,
                          ArrayRef<LatticeElement<ValueKnowledge> *> operands);
+  ChangeResult
+  visitAtenBincountOp(AtenBincountOp op,
+                      ArrayRef<LatticeElement<ValueKnowledge> *> operands);
 };
 } // namespace
 
@@ -1962,6 +1968,20 @@ ChangeResult TypeAnalyzer::visitAtenIndexTensorOp(
   }
   return getLatticeElement(op->getResult(0)).join(knowledge);
 }
+
+ChangeResult TypeAnalyzer::visitAtenBincountOp(
+    AtenBincountOp op, ArrayRef<LatticeElement<ValueKnowledge> *> operands) {
+  auto input = operands[0]->getValue();
+  // auto indicesList = op.indices();
+  auto knowledge =
+      ValueKnowledge::getNotNonePessimisticValueState(op->getContext());
+
+  knowledge.dtype = input.dtype;
+  knowledge.hasSizes = true;
+  knowledge.sizes.resize(1, kUnknownSize);
+  return getLatticeElement(op->getResult(0)).join(knowledge);
+}
+
 // -----------------------------------------------------------------------------
 // Transforms.
 // -----------------------------------------------------------------------------

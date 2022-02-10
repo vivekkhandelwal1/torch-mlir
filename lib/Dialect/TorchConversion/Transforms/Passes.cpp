@@ -19,6 +19,7 @@
 #include "torch-mlir/Conversion/TorchToSCF/TorchToSCF.h"
 #include "torch-mlir/Conversion/TorchToStd/TorchToStd.h"
 #include "torch-mlir/Conversion/TorchToTosa/TorchToTosa.h"
+#include "torch-mlir/Conversion/LowerAlgorithmicOps/LowerAlgorithmicOps.h"
 #include "torch-mlir/Dialect/Torch/Transforms/Passes.h"
 
 using namespace mlir;
@@ -59,6 +60,7 @@ void TorchConversion::createTorchBackendToLinalgOnTensorsBackendPipeline(
   // (e.g. dimensions which must be constant in a ranked programming model)
   // and those constants get somewhat obscured by TorchToStd.
   pm.addNestedPass<FuncOp>(createConvertTorchToLinalgPass());
+  pm.addNestedPass<FuncOp>(createConvertLowerAlgorithmicOpsPass());
   pm.addNestedPass<FuncOp>(createConvertTorchToStdPass());
   pm.addNestedPass<FuncOp>(createConvertTorchToSCFPass());
   pm.addNestedPass<FuncOp>(memref::createExpandOpsPass());

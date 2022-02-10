@@ -114,4 +114,15 @@ def ConvertTorchToTosa : Pass<"convert-torch-to-tosa", "FuncOp"> {
   let constructor = "mlir::torch::createConvertTorchToTosaPass()";
 }
 
+def ConvertLowerAlgorithmicOps : Pass<"convert-lower-algorithmic-ops", "FuncOp"> {
+  let summary = "Convert recognized Torch ops to Linalg ops";
+  let description = [{
+    Convert ATen ops to linalg ops.
+
+    This pass is similar to the TorchToLinalg pass; the difference is that this
+    pass also makes use of TMTensor Dialect, which the former one doesn't.
+  }];
+  let constructor = "mlir::torch::createConvertLowerAlgorithmicOpsPass()";
+}
+
 #endif // TORCHMLIR_CONVERSION_PASSES
