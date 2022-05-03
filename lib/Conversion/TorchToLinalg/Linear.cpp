@@ -94,7 +94,6 @@ public:
 
 namespace {
 class ConvertAtenFlipOp : public OpConversionPattern<AtenFlipOp> {
-
 public:
   using OpConversionPattern::OpConversionPattern;
   LogicalResult
@@ -526,7 +525,7 @@ public:
     for (size_t i = 2; i < inRank; i++)
       weightDims.push_back(getDimOp(rewriter, loc, weight, i));
 
-    // Checks for valid group size
+    // Guard unused values (transposed, groups).
     int64_t groupSize;
     if (!matchPattern(op.groups(), m_TorchConstantInt(&groupSize)))
       return rewriter.notifyMatchFailure(op,
