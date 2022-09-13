@@ -301,6 +301,53 @@ public:
           op, "desired size list length mismatches with the result type rank");
     }
 
+    // Identify swap case, specific to the bloom model.
+    if (inputShape.size() == outputSizeTorchInt.size()) {
+      SmallVector<int64_t> inputIndices, sizeIndices, outputShapeInt;
+      int64_t isDynamicDimInpCount = 0, isDynamicDimSizeCount = 0;
+
+      for (auto i : inputShape)
+        if (i == -1)
+          isDynamicDimInpCount += 1;
+
+      for (auto i : outputSizeTorchInt) {
+        int64_t tmp;
+        if (matchPattern(i, m_TorchConstantInt(&tmp))) {
+          outputShapeInt.push_back(tmp);
+          if (tmp == -1)
+            isDynamicDimSizeCount += 1;
+        }
+      }
+
+      int64_t differentDimsCount = 0;
+      if (isDynamicDimInpCount <= 1 && isDynamicDimSizeCount <= 1) {
+        for (unsigned i = 0; i < inputShape.size(); i++) {
+          if (inputShape[i] != outputShapeInt[i]) {
+            differentDimsCount += 1;
+            inputIndices.push_back(i);
+            auto iter = llvm::find(outputShapeInt, inputShape[i]);
+            if (iter != outputShapeInt.end()) {
+              sizeIndices.push_back(iter - outputShapeInt.begin());
+            }
+          }
+        }
+        if (differentDimsCount == 2) {
+          if (inputIndices.size() == 2 && sizeIndices.size() == 1) {
+            if ((inputIndices[1] == sizeIndices[0] &&
+                 inputShape[inputIndices[1]] == -1)) {
+              Type adjustedInputType = RankedTensorType::get(
+                  {inputShape[0], 16, outputShapeInt[outputSizeInt.size() - 1]},
+                  resultType.getElementType());
+              input = rewriter.create<tensor::CastOp>(loc, adjustedInputType,
+                                                      input);
+              inputType = input.getType().cast<RankedTensorType>();
+              inputShape = inputType.getShape();
+            }
+          }
+        }
+      }
+    }
+
     // Currently, we only handle the cases where each dimension is either
     // being expanded or collapsed. We do not handle cases where it's neither
     // collapsing nor expanding like view of [2,3] for 3x2 tensor.
