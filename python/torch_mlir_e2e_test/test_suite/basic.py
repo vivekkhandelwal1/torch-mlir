@@ -2513,6 +2513,25 @@ def ToCopyWithDTypeFalsePinMemoryModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(3, 2, 4))
 
 
+class ToCopyWithBoolDTypeModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([3, 2, 4], torch.uint8, True),
+    ])
+    def forward(self, x):
+        return torch.ops.aten._to_copy(x, dtype=torch.bool)
+
+
+@register_test_case(module_factory=lambda: ToCopyWithBoolDTypeModule())
+def ToCopyWithBoolDTypeModule_basic(module, tu: TestUtils):
+    module.forward(tu.randint(3, 2, 4).to(dtype=torch.uint8))
+
+
 # ==============================================================================
 
 

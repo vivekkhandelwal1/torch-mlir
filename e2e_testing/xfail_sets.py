@@ -456,6 +456,8 @@ TOSA_PASS_SET = {
     "BroadcastToSameRankStaticModule_basic",
     "BroadcastZeroRankInputStaticModule_basic",
     "SliceStaticModule_basic",
+    "ToDtypeBoolLayoutNoneModule_basic",
+    "ToCopyWithBoolDTypeModule_basic",
 }
 
 LTC_XFAIL_SET = {

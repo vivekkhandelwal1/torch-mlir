@@ -10,7 +10,11 @@
 #include "torch-mlir/Conversion/TorchToTosa/TosaLegalizeUtils.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"       // from @llvm-project
 #include "mlir/Dialect/Tosa/Utils/QuantUtils.h" // from @llvm-project
+#include "mlir/Support/LogicalResult.h"
 #include "torch-mlir/Conversion/TorchToTosa/TosaLegalizeCommon.h"
+#include "llvm/ADT/Optional.h"
+#include "llvm/ADT/SmallVector.h"
+#include <cstdint>
 
 namespace mlir {
 namespace tosa {
@@ -167,6 +171,7 @@ llvm::Optional<Value> getConstTensor(PatternRewriter &rewriter, Operation *op,
 
   auto const_type =
       RankedTensorType::get(shape, rewriter.getIntegerType(sizeof(T) * 8));
+  const_type.dump();
   auto const_attr = DenseElementsAttr::get(const_type, vec);
 
   auto const_op =
@@ -219,6 +224,94 @@ llvm::Optional<Value> getConstTensor<float>(PatternRewriter &rewriter,
   auto const_op =
       rewriter.create<tosa::ConstOp>(op->getLoc(), const_type, const_attr);
   return const_op.getResult();
+}
+
+// Template specialization for double
+template <>
+llvm::Optional<Value>
+getConstTensor<double>(PatternRewriter &rewriter, Operation *op,
+                       ArrayRef<double> vec, ArrayRef<int64_t> shape) {
+  uint64_t num_total_elements = 1;
+  for (int64_t a : shape) {
+    num_total_elements *= a;
+  }
+
+  if (vec.size() != num_total_elements) {
+    op->emitOpError("getConstTensor(): number of elements mismatch.");
+    return llvm::None;
+  }
+
+  auto const_type = RankedTensorType::get(shape, rewriter.getF64Type());
+  auto const_attr = DenseElementsAttr::get(const_type, vec);
+
+  auto const_op =
+      rewriter.create<tosa::ConstOp>(op->getLoc(), const_type, const_attr);
+  return const_op.getResult();
+}
+
+static LogicalResult checkValidityOfCast(Type src, Type dest) {
+  if ((src.isSignedInteger(64) && dest.isSignedInteger(32)) ||
+      (src.isSignedInteger(32) && dest.isSignedInteger(64)) ||
+      (src.isUnsignedInteger(8) && dest.isInteger(1)) ||
+      (src.isSignedInteger(64) && dest.isInteger(1)) ||
+      (src.isSignedInteger(32) && dest.isInteger(1)) ||
+      (src.isF64() && dest.isInteger(1)) ||
+      (src.isF32() && dest.isInteger(1))) {
+    return success();
+  }
+  return failure();
+}
+
+// Template specialization for float
+LogicalResult tosaCastTensorToType(PatternRewriter &rewriter, Operation *op,
+                                   Value src, Type destType, Value &result) {
+
+  Type srcElemTy = src.getType().dyn_cast<TensorType>().getElementType();
+  Type destElemTy = destType.dyn_cast<TensorType>().getElementType();
+
+  if (failed(checkValidityOfCast(srcElemTy, destElemTy)))
+    return rewriter.notifyMatchFailure(
+        op, "casting to result dtype is invalid or unsupported");
+
+  srcElemTy.dump();
+  destElemTy.dump();
+
+  if (destElemTy.isInteger(1)) {
+    auto srcType = src.getType().dyn_cast<TensorType>();
+    SmallVector<int64_t> srcShape(srcType.getShape());
+    uint64_t num_total_elements = 1;
+    for (int64_t a : srcShape)
+      num_total_elements *= a;
+
+    llvm::Optional<Value> constOp;
+    if (srcElemTy.isSignedInteger(64)) {
+      SmallVector<int64_t> values(num_total_elements, 0);
+      constOp =
+          tosa::getConstTensor<int64_t>(rewriter, op, values, srcShape).value();
+    } else if (srcElemTy.isSignedInteger(32)) {
+      SmallVector<int32_t> values(num_total_elements, 0);
+      constOp =
+          tosa::getConstTensor<int32_t>(rewriter, op, values, srcShape).value();
+    } else if (srcElemTy.isF64()) {
+      SmallVector<double> values(num_total_elements, 0.0);
+      constOp =
+          tosa::getConstTensor<double>(rewriter, op, values, srcShape).value();
+    } else if (srcElemTy.isF32()) {
+      SmallVector<float> values(num_total_elements, 0.0);
+      constOp =
+          tosa::getConstTensor<float>(rewriter, op, values, srcShape).value();
+    } else if (srcElemTy.isUnsignedInteger(8)) {
+      SmallVector<uint8_t> values(num_total_elements, 0);
+      constOp =
+          tosa::getConstTensor<uint8_t>(rewriter, op, values, srcShape).value();
+    }
+    result = rewriter.create<tosa::EqualOp>(op->getLoc(), destType, src,
+                                            constOp.value())->getResult(0);
+  } else {
+    result = rewriter.create<tosa::CastOp>(op->getLoc(), destType, src)
+                 ->getResult(0);
+  }
+  return success();
 }
 
 // Template instantiation

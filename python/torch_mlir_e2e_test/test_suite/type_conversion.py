@@ -199,7 +199,7 @@ class ToDtypeBoolLayoutNoneModule(torch.nn.Module):
         super().__init__()
 
     @export
-    @annotate_args([None, ([-1, -1], torch.float32, True)])
+    @annotate_args([None, ([], torch.float32, True)])
     def forward(self, x):
         return torch.ops.aten.to(x,
                                  dtype=torch.bool,
@@ -213,7 +213,7 @@ class ToDtypeBoolLayoutNoneModule(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: ToDtypeBoolLayoutNoneModule())
 def ToDtypeBoolLayoutNoneModule_basic(module, tu: TestUtils):
-    module.forward(tu.rand(3, 5))
+    module.forward(tu.rand().to(dtype=torch.float32))
 
 
 class TypeAsSameModule(torch.nn.Module):
