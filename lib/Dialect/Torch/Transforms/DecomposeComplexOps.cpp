@@ -1725,7 +1725,8 @@ class DecomposeAtenNativeLayerNormOp
     Location loc = op.getLoc();
     auto context = op.getContext();
 
-    auto inputTy = op.input().getType().cast<BaseTensorType>();
+    Value input = op.input();
+    auto inputTy = input.getType().cast<BaseTensorType>();
     if (!inputTy.hasSizes())
       return rewriter.notifyMatchFailure(
           op, "input tensor should have known sizes.");
@@ -1737,6 +1738,19 @@ class DecomposeAtenNativeLayerNormOp
     auto reduceDimInts = llvm::to_vector<4>(llvm::seq<int64_t>(axis, inputRank));
     auto reducedTy = op.getResult(1).getType();
     auto sizeListType = ListType::get(IntType::get(context));
+
+    auto reducedTyNew = reducedTy.cast<BaseTensorType>();
+    // The reduced dtype should match the input's dtype..
+    if (inputTy.getDtype() != reducedTy.cast<BaseTensorType>().getDtype()) {
+      // Create another reduced type with input's dtype.
+      reducedTyNew = reducedTyNew
+                         .getWithSizesAndDtype(
+                             !reducedTyNew.hasSizes()
+                                 ? Optional<ArrayRef<int64_t>>()
+                                 : llvm::makeArrayRef(reducedTyNew.getSizes()),
+                             inputTy.getDtype())
+                         .cast<BaseTensorType>();
+    }
 
     // build reduce dims
     SmallVector<Value> reduceDimVals;
@@ -1755,30 +1769,32 @@ class DecomposeAtenNativeLayerNormOp
     Value none = rewriter.create<Torch::ConstantNoneOp>(loc);
     // mean(x)
     Value inputMean = rewriter.create<AtenMeanDimOp>(
-        loc, reducedTy, op.input(), reduceDimList, cstTrue, none);
+        loc, reducedTyNew, input, reduceDimList, cstTrue, none);
 
     // x - mean(x)
     Value inputMeanExpanded =
         rewriter.create<AtenExpandAsOp>(loc, inputTy, inputMean, op.input());
     Value inputZeroMean = rewriter.create<AtenSubTensorOp>(
-        loc, inputTy, op.input(), inputMeanExpanded, one);
+        loc, inputTy, input, inputMeanExpanded, one);
     // var(x) = mean((x - mean(x))^2)
     Value inputZeroMeanSquare = rewriter.create<AtenMulTensorOp>(
         loc, inputTy, inputZeroMean, inputZeroMean);
     Value inputVar = rewriter.create<AtenMeanDimOp>(
-        loc, reducedTy, inputZeroMeanSquare, reduceDimList, cstTrue, none);
+        loc, reducedTyNew, inputZeroMeanSquare, reduceDimList, cstTrue, none);
 
     // rsqrt(var(x) + eps)
     Value inputVarPlusEps = rewriter.create<AtenAddScalarOp>(
-        loc, reducedTy, inputVar, op.eps(), one);
+        loc, reducedTyNew, inputVar, op.eps(), one);
     Value inputRsqrtVar =
-        rewriter.create<AtenRsqrtOp>(loc, reducedTy, inputVarPlusEps);
+        rewriter.create<AtenRsqrtOp>(loc, reducedTyNew, inputVarPlusEps);
 
     // (x - mean(x)) * rsqrt(var(x) + eps)
     Value inputRsqrtVarExpanded = rewriter.create<AtenExpandAsOp>(
-        loc, inputTy, inputRsqrtVar, op.input());
+        loc, inputTy, inputRsqrtVar, input);
+
     Value inputNormalized = rewriter.create<AtenMulTensorOp>(
         loc, inputTy, inputZeroMean, inputRsqrtVarExpanded);
+
     Value out = rewriter.create<TensorStaticInfoCastOp>(
         loc, op.getResult(0).getType(), inputNormalized);
 

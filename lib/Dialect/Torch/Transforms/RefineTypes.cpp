@@ -886,15 +886,17 @@ void TypeAnalysis::visitOperation(Operation *op,
   // 3 results take dtype from first operand.
   if (isa<AtenNativeLayerNormOp, AtenNativeBatchNormOp>(op)) {
     auto self = operands[0]->getValue();
+    auto second = op->getResult(1).getType().cast<BaseTensorType>().getDtype();
+    auto third = op->getResult(2).getType().cast<BaseTensorType>().getDtype();
     auto result0Knowledge =
         ValueKnowledge::getTensorPessimisticValueState(op->getContext());
     result0Knowledge.dtype = self.dtype;
     auto result1Knowledge =
         ValueKnowledge::getTensorPessimisticValueState(op->getContext());
-    result1Knowledge.dtype = self.dtype;
+    result1Knowledge.dtype = second;
     auto result2Knowledge =
         ValueKnowledge::getTensorPessimisticValueState(op->getContext());
-    result2Knowledge.dtype = self.dtype;
+    result2Knowledge.dtype = third;
     incorporateKnowledge(op->getResult(0), result0Knowledge);
     incorporateKnowledge(op->getResult(1), result1Knowledge);
     incorporateKnowledge(op->getResult(2), result1Knowledge);
