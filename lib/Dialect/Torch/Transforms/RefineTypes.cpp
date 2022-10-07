@@ -63,6 +63,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -487,7 +488,7 @@ private:
                            ArrayRef<const ValueState *> operands);
   void visitAtenScalarImplicitOp(AtenScalarImplicitOp op,
                                  ArrayRef<const ValueState *> operands);
-  void visitAtenEmbeddingBagOp(Operation *op);
+  void visitAtenEmbeddingBagOp(Operation *op, ArrayRef<const ValueState *> operands);
 };
 } // namespace
 
@@ -1114,7 +1115,7 @@ void TypeAnalysis::visitOperation(Operation *op,
   }
   
   if (isa<Aten_EmbeddingBagOp, AtenEmbeddingBagPaddingIdxOp>(op)) {
-    visitAtenEmbeddingBagOp(op);
+    visitAtenEmbeddingBagOp(op, operands);
     return;
   }
 
@@ -1193,12 +1194,13 @@ void TypeAnalysis::visitAtenLinearOp(AtenLinearOp op,
   incorporateKnowledge(op->getResult(0), knowledge);
 }
 
-void TypeAnalysis::visitAtenEmbeddingBagOp(Operation *op) {
+void TypeAnalysis::visitAtenEmbeddingBagOp(
+    Operation *op, ArrayRef<const ValueState *> operands) {
   auto resultFloatKnowledge =
       ValueKnowledge::getTensorPessimisticValueState(op->getContext());
-  resultFloatKnowledge.dtype = Float32Type::get(op->getContext());
+  resultFloatKnowledge.dtype = operands[0]->getValue().dtype;
 
-  incorporateKnowledge(op->getResult(0), resultFloatKnowledge);
+          incorporateKnowledge(op->getResult(0), resultFloatKnowledge);
   auto resultIntKnowledge =
       ValueKnowledge::getTensorPessimisticValueState(op->getContext());
   resultIntKnowledge.dtype =

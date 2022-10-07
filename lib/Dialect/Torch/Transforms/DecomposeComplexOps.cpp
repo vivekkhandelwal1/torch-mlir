@@ -2308,11 +2308,11 @@ public:
             op, "unimplemented: pin_memory is expected to be false");
     }
 
-    // TODO: Add support for non-None device arg.
-    if (!op.device().getType().isa<Torch::NoneType>()) {
-      return rewriter.notifyMatchFailure(
-          op, "unimplemented: device arg must be None");
-    }
+    // // TODO: Add support for non-None device arg.
+    // if (!op.device().getType().isa<Torch::NoneType>()) {
+    //   return rewriter.notifyMatchFailure(
+    //       op, "unimplemented: device arg must be None");
+    // }
 
     // TODO: Add support for non-strided layout.
     // torch.layout is by default strided i.e. 0.
