@@ -843,3 +843,29 @@ class IndexPutImpl2DIndexModule(torch.nn.Module):
     module_factory=lambda: IndexPutImpl2DIndexModule())
 def IndexPutImpl2DIndexModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(4, 7), tu.randint(1, 3, high=3), tu.rand(1, 3, 7))
+
+
+class IndexPutImplIndexWithNoneModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([2, 3, 4, 5], torch.float32, True),
+        ([6, 1], torch.int64, True),
+        ([7], torch.int64, True),
+        ([2, 3, 6, 7], torch.float32, True),
+    ])
+    def forward(self, input, index1, index2, value):
+        return torch.ops.aten._index_put_impl_(input, (None, None, index1, index2),
+                                               value,
+                                               accumulate=True,
+                                               unsafe=False)
+
+
+@register_test_case(
+    module_factory=lambda: IndexPutImplIndexWithNoneModule())
+def IndexPutImplIndexWithNoneModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(2, 3, 4, 5), tu.randint(6, 1, high=4), tu.randint(7, high=5), tu.rand(2, 3, 6, 7))

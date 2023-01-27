@@ -26,6 +26,7 @@
 #include "torch-mlir/Dialect/Torch/Utils/TorchUpstream.h"
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
 #include "torch-mlir/Dialect/TorchConversion/Transforms/BackendTypeConversion.h"
+#include <cstdint>
 
 using namespace mlir;
 using namespace mlir::torch;
@@ -223,6 +224,7 @@ public:
   LogicalResult
   matchAndRewrite(Aten_IndexPutImplOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    op->dump();
     if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
       return failure();
     Location loc = op.getLoc();
@@ -267,59 +269,236 @@ public:
           op, "Indices list size should not be greater than the input rank.");
 
     // TODO: Add support for cases with indices list size not equal to 1.
-    if (indicesList.size() != 1)
-      return rewriter.notifyMatchFailure(
-          op, "Unimplemented: Indices list size != 1");
-    Value indexTensor = indicesList[0];
+    Value torchCstZero = rewriter.create<Torch::ConstantIntOp>(
+        loc, rewriter.getI64IntegerAttr(0));
+    Value torchCstOne = rewriter.create<Torch::ConstantIntOp>(
+        loc, rewriter.getI64IntegerAttr(1));
+    Value torchCstNone = rewriter.create<Torch::ConstantNoneOp>(loc);
+    Value indexTensor;
+    bool needToFlattenUpdatesTensor = false;
+    if (indicesList.size() == 1) {
+      indexTensor = indicesList[0];
 
-    if (indexTensor.getType().isa<Torch::NoneType>())
-      return rewriter.notifyMatchFailure(op, "Index tensor must not be None.");
+      if (indexTensor.getType().isa<Torch::NoneType>())
+        return rewriter.notifyMatchFailure(op,
+                                           "Index tensor must not be None.");
 
-    // Creating a tm_tensor.scatter op with the following mapping:
-    // 1.) Index tensor from the `indicesList` maps to the indices in scatter
-    // op. Index tensor is expanded from 1-d to 2-d, and if it is already 2-d
-    // then first it is collapsed to a 1-d tensor and then expanded. And its
-    // element type is set to i32 as required for the scatter op.
-    // 2.) `values` is mapped to `updates` in scatter op.
-    // 3.) `input` is mapped to `original` in scatter op.
-    std::optional<unsigned> indexTensorRank = getTensorRank(indexTensor);
-    if (!indexTensorRank)
-      return rewriter.notifyMatchFailure(
-          op, "expected index tensor to have a rank");
-
-    if (*indexTensorRank == 2) {
-      auto indexTensorType = indexTensor.getType().cast<BaseTensorType>();
-      SmallVector<int64_t> indexTensorShape(indexTensorType.getSizes());
-      if (indexTensorShape[0] == 1) {
-        ValueTensorType collapsedIndexTensorType = ValueTensorType::get(
-            context, llvm::makeArrayRef({indexTensorShape[1]}),
-            indexTensorType.getDtype());
-        Value torchCstZero = rewriter.create<Torch::ConstantIntOp>(
-            loc, rewriter.getI64IntegerAttr(0));
-        Value torchCstOne = rewriter.create<Torch::ConstantIntOp>(
-            loc, rewriter.getI64IntegerAttr(1));
-        indexTensor = rewriter.create<AtenFlattenUsingIntsOp>(
-            loc, collapsedIndexTensorType, indexTensor, torchCstZero,
-            torchCstOne);
-      } else {
+      // Creating a tm_tensor.scatter op with the following mapping:
+      // 1.) Index tensor from the `indicesList` maps to the indices in scatter
+      // op. Index tensor is expanded from 1-d to 2-d, and if it is already 2-d
+      // then first it is collapsed to a 1-d tensor and then expanded. And its
+      // element type is set to i32 as required for the scatter op.
+      // 2.) `values` is mapped to `updates` in scatter op.
+      // 3.) `input` is mapped to `original` in scatter op.
+      std::optional<unsigned> indexTensorRank = getTensorRank(indexTensor);
+      if (!indexTensorRank)
         return rewriter.notifyMatchFailure(
-            op, "unimplemented: index tensor with rank 2 is supported only "
-                "when its first dimension is equal to 1");
+            op, "expected index tensor to have a rank");
+
+      if (*indexTensorRank == 2) {
+        auto indexTensorType = indexTensor.getType().cast<BaseTensorType>();
+        SmallVector<int64_t> indexTensorShape(indexTensorType.getSizes());
+        if (indexTensorShape[0] == 1) {
+          ValueTensorType collapsedIndexTensorType = ValueTensorType::get(
+              context, llvm::ArrayRef({indexTensorShape[1]}),
+              indexTensorType.getDtype());
+
+          indexTensor = rewriter.create<AtenFlattenUsingIntsOp>(
+              loc, collapsedIndexTensorType, indexTensor, torchCstZero,
+              torchCstOne);
+        } else {
+          return rewriter.notifyMatchFailure(
+              op, "unimplemented: index tensor with rank 2 is supported only "
+                  "when its first dimension is equal to 1");
+        }
+      } else if (*indexTensorRank > 2) {
+        return rewriter.notifyMatchFailure(
+            op, "unimplemented: index tensor with rank > 2 is not supported");
       }
-    } else if (*indexTensorRank > 2) {
-      return rewriter.notifyMatchFailure(
-          op, "unimplemented: index tensor with rank > 2 is not supported");
+
+      auto indexTensorType = indexTensor.getType().cast<BaseTensorType>();
+      int64_t indexTensorSize = indexTensorType.getSizes()[0];
+      SmallVector<int64_t> expandedIndexTensorSizes{indexTensorSize, 1};
+      ValueTensorType expandedIndexTensorType = ValueTensorType::get(
+          context, llvm::ArrayRef(expandedIndexTensorSizes),
+          indexTensorType.getDtype());
+      indexTensor = rewriter.create<AtenUnsqueezeOp>(
+          loc, expandedIndexTensorType, indexTensor, torchCstOne);
+      // return rewriter.notifyMatchFailure(
+      // op, "Unimplemented: Indices list size != 1");
+    } else if (indicesList.size() > 1) {
+      needToFlattenUpdatesTensor = true;
+      SmallVector<Value> finalShapeIndices;
+      SmallVector<int64_t> finalShapeIndicesInt;
+      Value inputDimZero =
+          rewriter.create<AtenSizeIntOp>(loc, op.getSelf(), torchCstZero);
+      Value inputDimOne =
+          rewriter.create<AtenSizeIntOp>(loc, op.getSelf(), torchCstOne);
+      Value index2DimZero =
+          rewriter.create<AtenSizeIntOp>(loc, indicesList[2], torchCstZero);
+      Value index3DimZero =
+          rewriter.create<AtenSizeIntOp>(loc, indicesList[3], torchCstZero);
+      finalShapeIndices.push_back(inputDimZero);
+      finalShapeIndices.push_back(inputDimOne);
+      finalShapeIndices.push_back(index2DimZero);
+      finalShapeIndices.push_back(index3DimZero);
+
+      auto inputTensorType = op.getSelf().getType().cast<BaseTensorType>();
+      finalShapeIndicesInt.push_back(inputTensorType.getSizes()[0]);
+      finalShapeIndicesInt.push_back(inputTensorType.getSizes()[1]);
+      finalShapeIndicesInt.push_back(
+          indicesList[2].getType().cast<BaseTensorType>().getSizes()[0]);
+      finalShapeIndicesInt.push_back(
+          indicesList[3].getType().cast<BaseTensorType>().getSizes()[0]);
+      int64_t indexCount = finalShapeIndicesInt[0] * finalShapeIndicesInt[1] *
+                           finalShapeIndicesInt[2] * finalShapeIndicesInt[3];
+
+      Type indicesDtype =
+          indicesList[2].getType().cast<BaseTensorType>().getDtype();
+      SmallVector<Value> updatedIndices(indicesList);
+
+      // Index number 1.
+      auto arangeIndicesType = ValueTensorType::get(
+          context, llvm::ArrayRef(inputTensorType.getSizes()[0]), indicesDtype);
+      updatedIndices[0] = rewriter.create<AtenArangeStartStepOp>(
+          loc, arangeIndicesType, torchCstZero, inputDimZero, torchCstOne,
+          /*dtype=*/torchCstNone,
+          /*layout=*/torchCstNone,
+          /*device=*/torchCstNone,
+          /*pin_memory=*/torchCstNone);
+
+      SmallVector<int64_t> indicesTypeShape{inputTensorType.getSizes()[0], 1, 1,
+                                            1};
+      auto reshapeIndicesType = ValueTensorType::get(
+          context, llvm::ArrayRef(indicesTypeShape), indicesDtype);
+      Value reshapeIndicesShapeTorchList = rewriter.create<PrimListConstructOp>(
+          loc, Torch::ListType::get(Torch::IntType::get(context)),
+          ValueRange{inputDimZero, torchCstOne, torchCstOne, torchCstOne});
+      updatedIndices[0] = rewriter.create<AtenViewOp>(
+          loc, reshapeIndicesType, updatedIndices[0],
+          reshapeIndicesShapeTorchList);
+
+      auto broadcastIndicesType = ValueTensorType::get(
+          context, llvm::ArrayRef(finalShapeIndicesInt), indicesDtype);
+      Value broadcastIndicesShapeTorchList =
+          rewriter.create<PrimListConstructOp>(
+              loc, Torch::ListType::get(Torch::IntType::get(context)),
+              finalShapeIndices);
+      updatedIndices[0] = rewriter.create<AtenBroadcastToOp>(
+          loc, broadcastIndicesType, updatedIndices[0],
+          broadcastIndicesShapeTorchList);
+
+      auto flattenIndicesType = ValueTensorType::get(
+          context, llvm::ArrayRef(indexCount), indicesDtype);
+      Value torchCstThree = rewriter.create<Torch::ConstantIntOp>(
+          loc, rewriter.getI64IntegerAttr(3));
+      updatedIndices[0] = rewriter.create<AtenFlattenUsingIntsOp>(
+          loc, flattenIndicesType, updatedIndices[0], torchCstZero,
+          torchCstThree);
+
+      // Index number 2.
+      arangeIndicesType = ValueTensorType::get(
+          context, llvm::ArrayRef(inputTensorType.getSizes()[1]), indicesDtype);
+      updatedIndices[1] = rewriter.create<AtenArangeStartStepOp>(
+          loc, arangeIndicesType, torchCstZero, inputDimOne, torchCstOne,
+          /*dtype=*/torchCstNone,
+          /*layout=*/torchCstNone,
+          /*device=*/torchCstNone,
+          /*pin_memory=*/torchCstNone);
+
+      indicesTypeShape = {inputTensorType.getSizes()[1], 1, 1};
+      reshapeIndicesType = ValueTensorType::get(
+          context, llvm::ArrayRef(indicesTypeShape), indicesDtype);
+      reshapeIndicesShapeTorchList = rewriter.create<PrimListConstructOp>(
+          loc, Torch::ListType::get(Torch::IntType::get(context)),
+          ValueRange{inputDimOne, torchCstOne, torchCstOne});
+      updatedIndices[1] = rewriter.create<AtenViewOp>(
+          loc, reshapeIndicesType, updatedIndices[1],
+          reshapeIndicesShapeTorchList);
+
+      updatedIndices[1] = rewriter.create<AtenBroadcastToOp>(
+          loc, broadcastIndicesType, updatedIndices[1],
+          broadcastIndicesShapeTorchList);
+
+      updatedIndices[1] = rewriter.create<AtenFlattenUsingIntsOp>(
+          loc, flattenIndicesType, updatedIndices[1], torchCstZero,
+          torchCstThree);
+
+      // Index number 3.
+      updatedIndices[2] = rewriter.create<AtenBroadcastToOp>(
+          loc, broadcastIndicesType, updatedIndices[2],
+          broadcastIndicesShapeTorchList);
+
+      updatedIndices[2] = rewriter.create<AtenFlattenUsingIntsOp>(
+          loc, flattenIndicesType, updatedIndices[2], torchCstZero,
+          torchCstThree);
+
+      // Index number 3.
+      updatedIndices[3] = rewriter.create<AtenBroadcastToOp>(
+          loc, broadcastIndicesType, updatedIndices[3],
+          broadcastIndicesShapeTorchList);
+
+      updatedIndices[3] = rewriter.create<AtenFlattenUsingIntsOp>(
+          loc, flattenIndicesType, updatedIndices[3], torchCstZero,
+          torchCstThree);
+
+      // Final Index
+      Value concatIndicesTorchList = rewriter.create<PrimListConstructOp>(
+          loc, Torch::ListType::get(flattenIndicesType), updatedIndices);
+
+      auto concatIndicesType = ValueTensorType::get(
+          context, llvm::ArrayRef(indexCount * 4), indicesDtype);
+      indexTensor = rewriter.create<AtenCatOp>(
+          loc, concatIndicesType, concatIndicesTorchList, torchCstZero);
+
+      reshapeIndicesType = ValueTensorType::get(
+          context, llvm::ArrayRef({inputRank, indexCount}), indicesDtype);
+      Value torchCstInputRank = rewriter.create<Torch::ConstantIntOp>(
+          loc, rewriter.getI64IntegerAttr(inputRank));
+      Value torchCstIndexCount = rewriter.create<Torch::ConstantIntOp>(
+          loc, rewriter.getI64IntegerAttr(indexCount));
+      reshapeIndicesShapeTorchList = rewriter.create<PrimListConstructOp>(
+          loc, Torch::ListType::get(Torch::IntType::get(context)),
+          ValueRange{torchCstInputRank, torchCstIndexCount});
+      indexTensor = rewriter.create<AtenViewOp>(
+          loc, reshapeIndicesType, indexTensor, reshapeIndicesShapeTorchList);
+      auto transposedIndicesType = ValueTensorType::get(
+          context, llvm::ArrayRef({indexCount, inputRank}), indicesDtype);
+      indexTensor = rewriter.create<AtenTransposeIntOp>(
+          loc, transposedIndicesType, indexTensor, torchCstZero, torchCstOne);
+
+      // Flatten values tensor.
+      auto valuesTensorType = op.getValues().getType().cast<BaseTensorType>();
+      auto flattenedValuesTensorType = ValueTensorType::get(
+          context, llvm::ArrayRef(indexCount), valuesTensorType.getDtype());
+      Value flattenedValuesTensor = rewriter.create<AtenFlattenUsingIntsOp>(
+          loc, flattenedValuesTensorType, op.getValues(), torchCstZero,
+          torchCstThree);
+      values = typeConverter->materializeTargetConversion(
+          rewriter, loc,
+          typeConverter->convertType(flattenedValuesTensor.getType()),
+          flattenedValuesTensor);
+      // indicesType = ValueTensorType::get(
+      //     context, llvm::ArrayRef(inputTensorType.getSizes()[0]),
+      //     inputTensorType.getDtype());
+      // updatedIndices[0] = rewriter.create<AtenArangeOp>(
+      //     loc, indicesType, inputDimZero, /*dtype=*/torchCstNone,
+      //     /*layout=*/torchCstNone,
+      //     /*device=*/torchCstNone,
+      //     /*pin_memory=*/torchCstNone);
+    } else {
+      return rewriter.notifyMatchFailure(op, "Indices list must not be empty.");
     }
 
-    if (inputRank != valuesRank) {
-      auto valueTensorType = op.getValues().getType().cast<BaseTensorType>();
-      SmallVector<int64_t> valueTensorShape(valueTensorType.getSizes());
+    if (inputRank != valuesRank && !needToFlattenUpdatesTensor) {
+      auto valuesTensorType = op.getValues().getType().cast<BaseTensorType>();
+      SmallVector<int64_t> valueTensorShape(valuesTensorType.getSizes());
       if (valuesRank == (inputRank + 1) && valueTensorShape[0] == 1) {
         SmallVector<int64_t> collapsedValueTensorSizes(
             valueTensorShape.begin() + 1, valueTensorShape.end());
         auto collapsedValueTensorType = ValueTensorType::get(
-            context, llvm::makeArrayRef(collapsedValueTensorSizes),
-            valueTensorType.getDtype());
+            context, llvm::ArrayRef(collapsedValueTensorSizes),
+            valuesTensorType.getDtype());
         Value torchCstZero = rewriter.create<Torch::ConstantIntOp>(
             loc, rewriter.getI64IntegerAttr(0));
         auto collapsedValueTensor =
@@ -337,20 +516,10 @@ public:
                 "supported");
       }
     }
-    auto indexTensorType = indexTensor.getType().cast<BaseTensorType>();
-    int64_t indexTensorSize = indexTensorType.getSizes()[0];
-    SmallVector<int64_t> expandedIndexTensorSizes{indexTensorSize, 1};
-    ValueTensorType expandedIndexTensorType =
-        ValueTensorType::get(context, llvm::ArrayRef(expandedIndexTensorSizes),
-                             indexTensorType.getDtype());
-    Value torchCstOne = rewriter.create<Torch::ConstantIntOp>(
-        loc, rewriter.getI64IntegerAttr(1));
-    Value expandedIndexTensor = rewriter.create<AtenUnsqueezeOp>(
-        loc, expandedIndexTensorType, indexTensor, torchCstOne);
 
     // `TMTensor::ScatterOp` expects indices of element type i32.
     Value indices = convertTensorToDtype(
-        rewriter, loc, expandedIndexTensor,
+        rewriter, loc, indexTensor,
         mlir::IntegerType::get(context, 32, mlir::IntegerType::Signed));
     indices = typeConverter->materializeTargetConversion(
         rewriter, loc, typeConverter->convertType(indices.getType()), indices);
