@@ -4077,7 +4077,8 @@ public:
     if (!op.getMemoryFormat().getType().template isa<Torch::NoneType>() &&
         (!matchPattern(op.getMemoryFormat(),
                        m_TorchConstantInt(&memoryFormat)) ||
-         memoryFormat != torch_upstream::MemoryFormat::Contiguous)) {
+         (memoryFormat != torch_upstream::MemoryFormat::Contiguous &&
+          memoryFormat != torch_upstream::MemoryFormat::ChannelsLast))) {
       return op.emitError(
           "unimplemented: only default memory format is supported");
     }
