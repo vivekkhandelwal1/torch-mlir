@@ -27,6 +27,7 @@
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
 #include "torch-mlir/Dialect/Torch/Utils/TorchUpstream.h"
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <numeric>
 
@@ -419,6 +420,8 @@ public:
     // shape since the reassociation of dimensions only requires rank
     // information.
     if (inferredDimension.has_value() && outputShape.size() > 1) {
+      llvm::outs()<<"Output Shape Unknown Dim Count"<<llvm::count(outputShape, kUnknownSize);
+      llvm::outs()<<"Input Shape Unknown Dim Count"<<llvm::count(inputShape, kUnknownSize);
       if (llvm::count(outputShape, kUnknownSize) != 1 ||
           llvm::count(inputShape, kUnknownSize) != 0) {
         return rewriter.notifyMatchFailure(
@@ -436,6 +439,8 @@ public:
 
       int64_t numOfElements = productReduceKnownSizes(inputShape);
       int64_t outputKnownNumOfElements = productReduceKnownSizes(outputShape);
+      llvm::outs()<<"numOfElements: "<<numOfElements<<"\n";
+      llvm::outs()<<"outputKnownNumOfElements: "<<outputKnownNumOfElements<<"\n";
       if (numOfElements % outputKnownNumOfElements != 0) {
         return rewriter.notifyMatchFailure(
             op, "number of elements in input tensor must be divisible by "
