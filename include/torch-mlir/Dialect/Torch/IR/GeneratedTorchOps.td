@@ -8166,6 +8166,38 @@ def Torch_Aten_EmbeddingBagOp : Torch_Op<"aten._embedding_bag", [
   }];
 }
 
+def Torch_Aten_EmbeddingBagDenseBackwardOp : Torch_Op<"aten._embedding_bag_dense_backward", [
+    AllowsTypeRefinement,
+    HasValueSemantics,
+    ReadOnly
+  ]> {
+  let summary = "Generated op for `aten::_embedding_bag_dense_backward : (Tensor, Tensor, Tensor, Tensor, Tensor, int, bool, int, Tensor?, int) -> (Tensor)`";
+  let arguments = (ins
+    AnyTorchTensorType:$grad,
+    AnyTorchTensorType:$indices,
+    AnyTorchTensorType:$offset2bag,
+    AnyTorchTensorType:$bag_size,
+    AnyTorchTensorType:$maximum_indices,
+    Torch_IntType:$num_weights,
+    Torch_BoolType:$scale_grad_by_freq,
+    Torch_IntType:$mode,
+    AnyTorchOptionalTensorType:$per_sample_weights,
+    Torch_IntType:$padding_idx
+  );
+  let results = (outs
+    AnyTorchTensorType:$result
+  );
+  let hasCustomAssemblyFormat = 1;
+  let extraClassDefinition = [{
+    ParseResult Aten_EmbeddingBagDenseBackwardOp::parse(OpAsmParser &parser, OperationState &result) {
+      return parseDefaultTorchOp(parser, result, 10, 1);
+    }
+    void Aten_EmbeddingBagDenseBackwardOp::print(OpAsmPrinter &printer) {
+      printDefaultTorchOp(printer, *this, 10, 1);
+    }
+  }];
+}
+
 def Torch_AtenEmptyLikeOp : Torch_Op<"aten.empty_like", [
     AllowsTypeRefinement,
     HasValueSemantics,

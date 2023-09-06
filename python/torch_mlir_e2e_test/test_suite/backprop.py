@@ -302,3 +302,28 @@ class LeakyReluBackwardStaticModule(torch.nn.Module):
 @register_test_case(module_factory=lambda: LeakyReluBackwardStaticModule())
 def LeakyReluBackwardStaticModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(3, 4, 5), tu.rand(3, 4, 5))
+
+
+# ==============================================================================
+
+
+class EmbeddingBagDenseBackwardModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([3, 2], torch.float32, True),
+        ([3,], torch.int64, True),
+        ([3,], torch.int64, True),
+        ([1,], torch.int64, True),
+    ])
+    def forward(self, grad, indices, offsets, x):
+        return torch.ops.aten._embedding_bag_dense_backward(grad, indices, offsets, bag_size=x, maximum_indices=x, num_weights=2, scale_grad_by_freq=False, mode=0, per_sample_weights=None, padding_idx=-1)
+
+
+@register_test_case(module_factory=lambda: EmbeddingBagDenseBackwardModule())
+def EmbeddingBagDenseBackwardModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(3, 2), torch.tensor([1, 0, 1]), torch.tensor([0, 0, 0]), torch.tensor([0]))

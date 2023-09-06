@@ -5062,6 +5062,62 @@ public:
 } // namespace
 
 namespace {
+class DecomposeAten_EmbeddingBagDenseBackwardOp
+    : public OpRewritePattern<Aten_EmbeddingBagDenseBackwardOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(Aten_EmbeddingBagDenseBackwardOp op,
+                                PatternRewriter &rewriter) const override {
+    auto grad = op.getGrad();
+    auto indices = op.getIndices();
+    Location loc = op.getLoc();
+    MLIRContext *context = op.getContext();
+
+    std::optional<unsigned> maybeRank = getTensorRank(grad);
+    if (!maybeRank)
+      return rewriter.notifyMatchFailure(op, "Unimplemented: unranked tensor");
+    unsigned rank = *maybeRank;
+    if (rank > 2)
+      return rewriter.notifyMatchFailure(
+          op, "unimplemented: grad must be a 2-d tensor");
+
+    SmallVector<Value> resultShape;
+    int64_t numWeights;
+    if (!matchPattern(op.getNumWeights(), m_TorchConstantInt(&numWeights)))
+      return rewriter.notifyMatchFailure(
+          op, "unimplemented: num_weights must be constant int");
+
+    resultShape.push_back(rewriter.create<Torch::ConstantIntOp>(
+        loc, rewriter.getI64IntegerAttr(numWeights)));
+    Value cstOne = rewriter.create<Torch::ConstantIntOp>(
+        loc, rewriter.getI64IntegerAttr(1));
+    resultShape.push_back(rewriter.create<AtenSizeIntOp>(loc, grad, cstOne));
+
+    Value gradWeightSize = rewriter.create<Torch::PrimListConstructOp>(
+        loc, ListType::get(IntType::get(context)), resultShape);
+
+    Value cstNone = rewriter.create<Torch::ConstantNoneOp>(loc);
+    Value gradWeight =
+        rewriter.create<AtenNewZerosOp>(loc, op.getType(), grad, gradWeightSize,
+                                        cstNone, cstNone, cstNone, cstNone);
+
+    Value cstFalse = rewriter.create<Torch::ConstantBoolOp>(op.getLoc(), false);
+    Value cstTrue = rewriter.create<Torch::ConstantBoolOp>(op.getLoc(), true);
+
+    auto listElemType = ValueTensorType::get(context, std::nullopt, nullptr);
+    SmallVector<Value> listIndices{indices};
+    Value indicesList = rewriter.create<Torch::PrimListConstructOp>(
+        loc, Torch::ListType::get(listElemType), listIndices);
+
+    rewriter.replaceOpWithNewOp<Aten_IndexPutImplOp>(
+        op, op.getType(), gradWeight, indicesList, grad, cstTrue,
+        /*unsafe=*/cstFalse);
+    return success();
+  }
+};
+} // namespace
+
+namespace {
 class DecomposeComplexOpsPass
     : public DecomposeComplexOpsBase<DecomposeComplexOpsPass> {
 private:
@@ -5236,6 +5292,7 @@ public:
     addPatternIfTargetOpIsIllegal<DecomposeAtenTypeAsOp>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenTileOp>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenIndexTensorOp>(patterns);
+    addPatternIfTargetOpIsIllegal<DecomposeAten_EmbeddingBagDenseBackwardOp>(patterns);
 
     GreedyRewriteConfig config;
     config.useTopDownTraversal = true;

@@ -1046,6 +1046,9 @@ def aten〇_embedding_bag〡shape(weight: List[int], indices: List[int], offsets
      return _embedding_bag_helper(weight, indices, offsets, include_last_offset,
                                  mode, per_sample_weights, padding_idx)
 
+def aten〇_embedding_bag_dense_backward〡shape(grad: List[int], indices: List[int], offset2bag: List[int], bag_size: List[int], maximum_indices: List[int], num_weights: int, scale_grad_by_freq: bool, mode: int, per_sample_weights: Optional[List[int]], padding_idx: int = -1) -> List[int]:
+    return [num_weights] + grad[1:]
+
 @check_shape_function([
     Invocation(TensorOfShape(2, 3), LongTensorOfShape(2), None, 1, -100), # Basic case.
     Invocation(TensorOfShape(3), LongTensorOfShape(), None, 1, -100), # No batch dim.
@@ -3510,6 +3513,10 @@ def aten〇_embedding_bag〡dtype(weight_rank_dtype: Tuple[int, int], indices_ra
 def aten〇embedding_bag〇padding_idx〡dtype(weight_rank_dtype: Tuple[int, int], indices_rank_dtype: Tuple[int, int], offsets_rank_dtype: Tuple[int, int], scale_grad_by_freq: bool, mode: int, sparse: bool, per_sample_weights_rank_dtype: Optional[Tuple[int, int]], include_last_offset: bool, padding_idx: Optional[int]) -> Tuple[int, int, int, int]:
     weight_rank, weight_dtype = weight_rank_dtype
     return weight_dtype, torch.int64, torch.int64, torch.int64
+
+def aten〇_embedding_bag_dense_backward〡dtype(grad_rank_dtype: Tuple[int, int], indices_rank_dtype: Tuple[int, int], offset2bag_rank_dtype: Tuple[int, int], bag_size_rank_dtype: Tuple[int, int], maximum_indices_rank_dtype: Tuple[int, int], num_weights: int, scale_grad_by_freq: bool, mode: int, per_sample_weights_rank_dtype: Optional[Tuple[int, int]], padding_idx: int = -1) -> int:
+    _, grad_dtype = grad_rank_dtype
+    return grad_dtype
 
 @check_dtype_function(_check_two_tensor_op(out_int32=True) + _check_two_tensor_op(out_int32=False))
 def aten〇bucketize〇Tensor〡dtype(self_rank_dtype: Tuple[int, int], boundaries_rank_dtype: Tuple[int, int], out_int32: bool = False, right: bool = False) -> int:
