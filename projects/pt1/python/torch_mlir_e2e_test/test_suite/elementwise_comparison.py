@@ -823,3 +823,47 @@ class ElementwiseIsinfModule(torch.nn.Module):
 def ElementwiseIsinfModule_basic(module, tu: TestUtils):
     x = torch.tensor([1.0, torch.nan, torch.inf, -torch.inf])
     module.forward(x)
+
+
+# ==============================================================================
+
+
+class ElementwiseNonzeroFloatTensorModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([1, 2, 3], torch.float32, True),
+    ])
+    def forward(self, x):
+        return torch.ops.aten.nonzero(x)
+
+
+@register_test_case(module_factory=lambda: ElementwiseNonzeroFloatTensorModule())
+def ElementwiseNonzeroFloatTensorModule_basic(module, tu: TestUtils):
+    module.forward(
+        torch.tensor([[[1.0, 2.2, 0.0], [1.0, 2.0, 3.1]]]).to(torch.float32))
+
+
+# ==============================================================================
+
+
+class ElementwiseNonzeroIntTensorModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([1, 2, 3], torch.int64, True),
+    ])
+    def forward(self, x):
+        return torch.ops.aten.nonzero(x)
+
+
+@register_test_case(module_factory=lambda: ElementwiseNonzeroIntTensorModule())
+def ElementwiseNonzeroIntTensorModule_basic(module, tu: TestUtils):
+    module.forward(
+        torch.tensor([[[1, 2, 0], [0, 2, 3]]]))

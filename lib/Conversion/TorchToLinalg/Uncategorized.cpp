@@ -2584,6 +2584,151 @@ public:
 };
 } // namespace
 
+namespace {
+class ConvertAtenNonzeroOp : public OpConversionPattern<AtenNonzeroOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(AtenNonzeroOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
+      return failure();
+
+    Location loc = op.getLoc();
+    const TypeConverter *typeConverter = getTypeConverter();
+    MLIRContext *context = rewriter.getContext();
+    Value input = adaptor.getSelf();
+    RankedTensorType inputType =
+        typeConverter->convertType(input.getType()).cast<RankedTensorType>();
+    Type inputElementType = inputType.getElementType();
+    unsigned inputRank = inputType.getRank();
+    if (!(inputElementType.isa<mlir::FloatType>() ||
+          inputElementType.isa<mlir::IntegerType>()))
+      return rewriter.notifyMatchFailure(
+          op,
+          "unimplemented: input element type mut be either float or integer");
+
+    RankedTensorType resultType =
+        typeConverter->convertType(op.getType()).cast<RankedTensorType>();
+    unsigned resultRank = resultType.getRank();
+    if (resultRank != 2)
+      return rewriter.notifyMatchFailure(op, "result must be of rank 2");
+
+    auto elementType = resultType.getElementType();
+    Value outTensor = rewriter.create<tensor::EmptyOp>(
+        loc, llvm::ArrayRef<int64_t>{1, inputRank}, elementType);
+    outTensor = rewriter.create<tensor::CastOp>(loc, resultType, outTensor);
+
+    SmallVector<AffineExpr> outputExpr;
+    for (unsigned i = 0; i < inputRank; i++) {
+      outputExpr.push_back(getAffineDimExpr(i, context));
+    }
+
+    Value constantZero = getConstant(rewriter, loc, 0, inputElementType);
+
+    AffineMap counterMap = AffineMap::get(
+        inputRank + 1, 0, {getAffineDimExpr(inputRank, context)}, op->getContext());
+    AffineMap inputMap =
+        AffineMap::get(inputRank + 1, 0, outputExpr, op->getContext());
+
+    SmallVector<AffineMap> indexingMaps{inputMap, counterMap, counterMap};
+    SmallVector<utils::IteratorType> iteratorTypes(
+        inputRank + 1, utils::IteratorType::reduction);
+
+    SmallVector<Value> indexConstants;
+    for (int64_t i = 0; i < inputRank; i++) {
+      indexConstants.push_back(rewriter.create<arith::ConstantIndexOp>(loc, i));
+    }
+
+    Value cstZeroInt =
+        rewriter.create<arith::ConstantOp>(loc, rewriter.getI64IntegerAttr(0));
+    Value cstOneInt =
+        rewriter.create<arith::ConstantOp>(loc, rewriter.getI64IntegerAttr(1));
+    Value cstZeroIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value cstOneIndex = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+    Value nonzeroCounter = createZeroInitTensor(
+        rewriter, loc, ValueRange{cstOneInt}, rewriter.getI64Type());
+    Value zeroCounter = createZeroInitTensor(
+        rewriter, loc, ValueRange{cstOneInt}, rewriter.getI64Type());
+
+    rewriter.create<linalg::GenericOp>(
+        loc, TypeRange{nonzeroCounter.getType(), zeroCounter.getType()},
+        ValueRange{input}, ValueRange{nonzeroCounter, zeroCounter},
+        indexingMaps, iteratorTypes,
+        [&](OpBuilder &b, Location loc, ValueRange args) {
+          // Creating a tensor of shape equal to input rank containing
+          // the current iterator values.
+          Value indicesTensor = b.create<tensor::EmptyOp>(
+              loc, llvm::ArrayRef<int64_t>{1, inputRank}, elementType);
+          for (unsigned i = 0; i < inputRank; i++) {
+            Value index =
+                castIndexToInt64(b, loc, b.create<linalg::IndexOp>(loc, i));
+            indicesTensor = b.create<tensor::InsertOp>(
+                loc, index, indicesTensor,
+                ValueRange{cstZeroIndex, indexConstants[i]});
+          }
+          indicesTensor =
+              rewriter.create<tensor::CastOp>(loc, resultType, indicesTensor);
+
+          // %cond = arith::CmpI::NEQ %in_scal, %cst_0
+          // %nonzero_counter_val = arith.Select %cond, %cst_1, %cst_0
+          // %nonzero_counter = arith.addI %counter, %nonzero_counter_val
+          // %zero_counter_val = arith.Select %cond, %cst_0, %cst_1
+          // %zero_counter = arith.addI %counter, %zero_counter_val
+          // %curr_dim = tensor.dim %result, %cst_0
+          // %insert_index = arith.Select %cond, %nonzero_counter, %curr_dim
+          // %result = tensor.insert_slice %res_tensor, %index_tensor
+          Value cond;
+          if (inputElementType.isa<mlir::FloatType>()) {
+            cond = rewriter.create<arith::CmpFOp>(
+                loc, arith::CmpFPredicate::UNE, args[0], constantZero);
+          } else {
+            cond = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne,
+                                                  args[0], constantZero);
+          }
+          Value nonzeroCounterScalar =
+              b.create<arith::SelectOp>(loc, cond, cstOneInt, cstZeroInt);
+          Value currNonzeroCounter =
+              b.create<arith::AddIOp>(loc, args[1], nonzeroCounterScalar);
+          Value zeroCounterScalar =
+              b.create<arith::SelectOp>(loc, cond, cstZeroInt, cstOneInt);
+          Value currZeroCounter =
+              b.create<arith::AddIOp>(loc, args[2], zeroCounterScalar);
+
+          SmallVector<Value> outTensorCurrDims;
+          for (unsigned i = 0; i < resultRank; i++)
+            outTensorCurrDims.push_back(
+                b.create<tensor::DimOp>(loc, outTensor, i));
+          Value insertionIndex = b.create<arith::SelectOp>(
+              loc, cond, castIntToIndex(b, loc, currNonzeroCounter),
+              outTensorCurrDims[0]);
+
+          SmallVector<Value> strides;
+          SmallVector<Value> sizes{outTensorCurrDims[0]};
+          SmallVector<Value> offsets{insertionIndex};
+
+          outTensor = rewriter.create<tensor::InsertSliceOp>(
+              loc, indicesTensor, outTensor, offsets, sizes, strides,
+              /*static_offsets=*/
+              llvm::ArrayRef<int64_t>{ShapedType::kDynamic, 0},
+              /*static_sizes=*/
+              llvm::ArrayRef<int64_t>{ShapedType::kDynamic, inputRank},
+              /*static_strides=*/llvm::ArrayRef<int64_t>{1, 1});
+
+          b.create<linalg::YieldOp>(
+              loc, ValueRange{currNonzeroCounter, currZeroCounter});
+        });
+
+    Value castedResult =
+        rewriter.create<tensor::CastOp>(loc, resultType, outTensor);
+    rewriter.replaceOp(op, castedResult);
+    op->getParentOfType<ModuleOp>().dump();
+    return success();
+  }
+};
+} // namespace
+
 void mlir::torch::torch_to_linalg::populateUncategorizedPatternsAndLegality(
     TypeConverter &typeConverter, RewritePatternSet &patterns,
     ConversionTarget &target) {
@@ -2639,4 +2784,6 @@ void mlir::torch::torch_to_linalg::populateUncategorizedPatternsAndLegality(
   patterns.add<ConvertDequantizePerChannel>(typeConverter, context);
   target.addIllegalOp<AtenGridSamplerOp>();
   patterns.add<ConvertAtenGridSamplerOp>(typeConverter, context);
+  target.addIllegalOp<AtenNonzeroOp>();
+  patterns.add<ConvertAtenNonzeroOp>(typeConverter, context);
 }
