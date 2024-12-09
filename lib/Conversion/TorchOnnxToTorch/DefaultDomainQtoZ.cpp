@@ -12,6 +12,7 @@
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace mlir;
 using namespace mlir::torch;
@@ -328,14 +329,14 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
         Value cZp = operands[7];
         Value c = operands.size() == 9 ? operands[8] : nullptr;
 
-        auto check = [](Value v) {
-          auto vTy = cast<Torch::ValueTensorType>(v.getType());
-          return llvm::all_of(vTy.getSizes(), [](int64_t d) { return d == 1; });
-        };
-        if (!check(aScale) || !check(aZp) || !check(bScale) || !check(bZp) ||
-            !check(cScale) || !check(cScale))
-          return rewriter.notifyMatchFailure(
-              binder.op, "not supported for non per-tensor quantization");
+        // auto check = [](Value v) {
+        //   auto vTy = cast<Torch::ValueTensorType>(v.getType());
+        //   return llvm::all_of(vTy.getSizes(), [](int64_t d) { return d == 1; });
+        // };
+        // if (!check(aScale) || !check(aZp) || !check(bScale) || !check(bZp) ||
+        //     !check(cScale) || !check(cScale))
+        //   return rewriter.notifyMatchFailure(
+        //       binder.op, "not supported for non per-tensor quantization");
 
         auto extract = [&rewriter, &binder](Value v) {
           auto vTy = cast<Torch::ValueTensorType>(v.getType());
@@ -353,8 +354,7 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
         aScale = extract(aScale);
         bScale = extract(bScale);
         cScale = extract(cScale);
-
-        auto make = [&rewriter, &binder](Value v, Value scale,
+        auto makePerTensor = [&rewriter, &binder](Value v, Value scale,
                                          Value zp) -> Value {
           auto ty = cast<Torch::ValueTensorType>(v.getType());
           auto newTy = getQTorchTypeFromTorchIntType(ty);
@@ -362,8 +362,22 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
               binder.getLoc(), newTy, v, scale, zp);
         };
 
-        a = make(a, aScale, aZp);
-        b = make(b, bScale, bZp);
+        auto makePerChannel = [&rewriter, &binder](Value v, Value scale,
+                                         Value zp) -> Value {
+          auto ty = cast<Torch::ValueTensorType>(v.getType());
+          auto newTy = getQTorchTypeFromTorchIntType(ty);
+          return rewriter.create<Torch::Aten_MakePerChannelQuantizedTensorOp>(
+              binder.getLoc(), newTy, v, scale, zp);
+        };
+
+        a = makePerTensor(a, aScale, aZp);
+        // The onnx's QLinearConv op expects per channel quantization only for the weight tensor.
+        bool isPerChannelQuantizationForWeight = false;
+        if (isPerChannelQuantizationForWeight) {
+          b = makePerChannel(b, bScale, bZp);
+        } else {
+          b = makePerTensor(b, bScale, bZp);
+        }
 
         auto cTy = rewriter.getType<Torch::ValueTensorType>(
             resultType.getOptionalSizes(),
