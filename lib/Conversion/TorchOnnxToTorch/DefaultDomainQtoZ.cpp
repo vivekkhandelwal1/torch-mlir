@@ -4555,4 +4555,108 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
         rewriter.replaceOp(binder.op, primLoop);
         return success();
       });
+  patterns.onOp(
+      "GroupQueryAttention", 17,
+      [](OpBinder binder, ConversionPatternRewriter &rewriter) {
+        Torch::ValueTensorType yType, meanType, invStdDevType;
+        Value x, scale, b;
+        int64_t axis, stashType;
+        float epsilon;
+        if (binder.tensorOperandAtIndex(x, 0) ||
+            binder.tensorOperandAtIndex(scale, 1) ||
+            binder.tensorOperandAtIndex(b, 2) ||
+            binder.tensorResultTypeAtIndex(yType, 0) ||
+            binder.s64IntegerAttr(axis, "axis", -1) ||
+            binder.f32FloatAttr(epsilon, "epsilon", 0.00001f) ||
+            binder.s64IntegerAttr(stashType, "stash_type", 1))
+          return failure();
+
+        std::optional<int64_t> stashTypeIntTorch =
+            onnxDtypeIntToTorchDtypeInt(stashType);
+        if (!stashTypeIntTorch.has_value())
+          return rewriter.notifyMatchFailure(
+              binder.op, "unimplemented support for the given stash_type");
+        FailureOr<Type> stashDtype = Torch::getTypeForScalarType(
+            binder.op->getContext(),
+            (torch_upstream::ScalarType)stashTypeIntTorch.value());
+        if (failed(stashDtype))
+          return failure();
+
+        // Convert dtype if stash_type is different from input dtype
+        auto xType = cast<Torch::ValueTensorType>(x.getType());
+        Value cstFalse =
+            rewriter.create<Torch::ConstantBoolOp>(binder.getLoc(), false);
+        Value none = rewriter.create<Torch::ConstantNoneOp>(binder.getLoc());
+        if (*stashDtype != xType.getOptionalDtype()) {
+          auto newXType =
+              xType.getWithSizesAndDtype(xType.getOptionalSizes(), *stashDtype);
+          Value dtypeValue = rewriter.create<Torch::ConstantIntOp>(
+              binder.getLoc(),
+              rewriter.getI64IntegerAttr(stashTypeIntTorch.value()));
+          x = rewriter.create<Torch::AtenToDtypeOp>(
+              binder.getLoc(), newXType, x, /*dtype=*/dtypeValue,
+              /*non_blocking=*/cstFalse, /*copy=*/cstFalse,
+              /*memory_format=*/none);
+        }
+
+        Value constEpsilon = rewriter.create<Torch::ConstantFloatOp>(
+            binder.getLoc(), rewriter.getType<Torch::FloatType>(),
+            rewriter.getF64FloatAttr(epsilon));
+        unsigned rank = 1;
+        if (std::optional<unsigned> maybeRank = Torch::getTensorRank(x))
+          rank = *maybeRank;
+        SmallVector<Value> normalized;
+        axis = Torch::toPositiveDim(axis, rank);
+        if (!xType.hasSizes()) {
+          return rewriter.notifyMatchFailure(
+              binder.op, "Expected input (X) to have sizes");
+        }
+        ArrayRef<int64_t> xShape = xType.getSizes();
+        for (int64_t n = axis; n < rank; n++) {
+          normalized.push_back(rewriter.create<Torch::ConstantIntOp>(
+              binder.getLoc(), rewriter.getI64IntegerAttr(xShape[n])));
+        }
+        Value normalized_shape = rewriter.create<Torch::PrimListConstructOp>(
+            binder.getLoc(),
+            Torch::ListType::get(Torch::IntType::get(binder.op->getContext())),
+            normalized);
+
+        SmallVector<int64_t> reducedShape(rank, 1);
+        for (int64_t i = 0; i < axis; i++)
+          reducedShape[i] = xShape[i];
+        auto reducedType =
+            xType.getWithSizesAndDtype(reducedShape, *stashDtype);
+        auto y = rewriter.create<Torch::AtenNativeLayerNormOp>(
+            binder.getLoc(), yType, /*meanType=*/reducedType,
+            /*invStdDevType=*/reducedType, x, normalized_shape, scale, b,
+            constEpsilon);
+
+        int64_t numResults = binder.op->getNumResults();
+        if (numResults == 1) {
+          rewriter.replaceOp(binder.op, y.getResult0());
+          return success();
+        }
+
+        Value meanOutput = y.getResult1();
+        Value varOutput = y.getResult2();
+        // Convert meanType and varType back if stash_dtype is different
+        if (binder.tensorResultTypeAtIndex(meanType, 1) ||
+            binder.tensorResultTypeAtIndex(invStdDevType, 2))
+          return failure();
+        if (*stashDtype != meanType.getOptionalDtype()) {
+          Value constDtype = Torch::getDtypeIntValueForType(
+              rewriter, binder.getLoc(), meanType.getDtype());
+          meanOutput = rewriter.create<Torch::AtenToDtypeOp>(
+              binder.getLoc(), meanType, meanOutput, /*dtype=*/constDtype,
+              /*non_blocking=*/cstFalse, /*copy=*/cstFalse,
+              /*memory_format=*/none);
+          varOutput = rewriter.create<Torch::AtenToDtypeOp>(
+              binder.getLoc(), invStdDevType, varOutput, /*dtype=*/constDtype,
+              /*non_blocking=*/cstFalse, /*copy=*/cstFalse,
+              /*memory_format=*/none);
+        }
+        rewriter.replaceOp(binder.op, {y.getResult0(), meanOutput, varOutput});
+
+        return success();
+      });
 }
